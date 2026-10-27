@@ -1593,7 +1593,15 @@ bool ObAIFuncPromptObjectUtils::is_valid_prompt_object(ObJsonObject *prompt_obje
       ObJsonNode *node = args_array->get_value(i);
       if (OB_ISNULL(node)) {  
         is_valid = false;
-      } else if (node->json_type() != ObJsonNodeType::J_STRING && node->json_type() != ObJsonNodeType::J_OBJECT) {
+      } else if (node->json_type() != ObJsonNodeType::J_STRING &&
+                 node->json_type() != ObJsonNodeType::J_OBJECT &&
+                 node->json_type() != ObJsonNodeType::J_ARRAY &&
+                 node->json_type() != ObJsonNodeType::J_INT &&
+                 node->json_type() != ObJsonNodeType::J_UINT &&
+                 node->json_type() != ObJsonNodeType::J_DOUBLE &&
+                 node->json_type() != ObJsonNodeType::J_DECIMAL &&
+                 node->json_type() != ObJsonNodeType::J_BOOLEAN) {
+        // Scalar JSON arguments such as json_array(1, true) are rendered as JSON text.
         is_valid = false;
       }
     }
@@ -1620,11 +1628,18 @@ int ObAIFuncPromptObjectUtils::replace_all_str_args_in_template(ObIAllocator &al
     char *result_buf = NULL;
     for (uint64_t i = 0; OB_SUCC(ret) && i < args_count; i++) {
       ObJsonNode *arg_node = args_array->get_value(i);
-      if (OB_NOT_NULL(arg_node) && arg_node->json_type() == ObJsonNodeType::J_STRING) {
+      if (OB_ISNULL(arg_node)) {
+        ret = OB_INVALID_ARGUMENT;
+      } else if (arg_node->json_type() == ObJsonNodeType::J_STRING) {
         ObJsonString *arg_str = static_cast<ObJsonString *>(arg_node);
         max_result_len += arg_str->get_str().length();
       } else {
-        ret = OB_INVALID_ARGUMENT;
+        // Structured and scalar JSON arguments render as compact JSON text.
+        ObString arg_str;
+        if (OB_FAIL(ObAIFuncJsonUtils::print_json_to_str(allocator, arg_node, arg_str))) {
+        } else {
+          max_result_len += arg_str.length();
+        }
       }
     }
     if (OB_FAIL(ret)) {
@@ -1666,13 +1681,23 @@ int ObAIFuncPromptObjectUtils::replace_all_str_args_in_template(ObIAllocator &al
             
             if (valid_index && index >= 0 && static_cast<uint64_t>(index) < args_count) {
               ObJsonNode *arg_node = args_array->get_value(static_cast<uint64_t>(index));
-              if (OB_NOT_NULL(arg_node) && arg_node->json_type() == ObJsonNodeType::J_STRING) {
+              if (arg_node != NULL && arg_node->json_type() == ObJsonNodeType::J_STRING) {
                 ObJsonString *arg_str = static_cast<ObJsonString *>(arg_node);
                 ObString arg_value = arg_str->get_str();
                 
                 if (result_pos + arg_value.length() <= max_result_len) {
                   MEMCPY(result_buf + result_pos, arg_value.ptr(), arg_value.length());
                   result_pos += arg_value.length();
+                } else {
+                  ret = OB_BUF_NOT_ENOUGH;
+                }
+              } else if (arg_node != NULL) {
+                // Structured and scalar JSON arguments render as compact JSON text.
+                ObString object_str;
+                if (OB_FAIL(ObAIFuncJsonUtils::print_json_to_str(allocator, arg_node, object_str))) {
+                } else if (result_pos + object_str.length() <= max_result_len) {
+                  MEMCPY(result_buf + result_pos, object_str.ptr(), object_str.length());
+                  result_pos += object_str.length();
                 } else {
                   ret = OB_BUF_NOT_ENOUGH;
                 }
